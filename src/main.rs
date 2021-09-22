@@ -1,8 +1,6 @@
-//! This crate is a simple implementation of minesweeper. It is carefully documented to encourage
-//! newbies to add new games to the repository.
-
 extern crate termion;
 extern crate rand;
+extern crate yaml_rust;
 
 use termion::{clear, cursor, color, style};
 use termion::raw::IntoRawMode;
@@ -15,123 +13,96 @@ use std::process;
 
 use rand::Rng;
 
-/// A cell in the grid.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
-struct Cell {
-    /// Does it contain a mine?
-    mine: bool,
-    /// Is it revealed?
-    ///
-    /// That is, is it showed or chosen previously by the player?
-    revealed: bool,
-    /// Is this cell observed?
-    ///
-    /// That is, is the state of this cell determined, or is it pending for randomization.
-    observed: bool,
-    /// Does this flag contain a flag?
-    flagged: bool,
-}
-
-/// The string printed for flagged cells.
-const FLAGGED: &'static str = "F";
-/// The string printed for mines in the game over revealing.
-const MINE: &'static str = "*";
-/// The string printed for concealed cells.
-const CONCEALED: &'static str = "▒";
-
-/// The game over screen.
-const GAME_OVER: &'static str = "╔═════════════════╗\n\r\
-                                 ║───┬Game over────║\n\r\
-                                 ║ r ┆ replay      ║\n\r\
-                                 ║ q ┆ quit        ║\n\r\
-                                 ╚═══╧═════════════╝";
-
-/// The upper and lower boundary char.
-const HORZ_BOUNDARY: &'static str = "─";
-/// The left and right boundary char.
-const VERT_BOUNDARY: &'static str = "│";
-
-/// The top-left corner
-const TOP_LEFT_CORNER: &'static str = "┌";
-/// The top-right corner
-const TOP_RIGHT_CORNER: &'static str = "┐";
-/// The bottom-left corner
-const BOTTOM_LEFT_CORNER: &'static str = "└";
-/// The bottom-right corner
-const BOTTOM_RIGHT_CORNER: &'static str = "┘";
-
-/// The help page.
+// The help page.
 const HELP: &'static str = r#"
-minesweeper ~ a simple minesweeper implementation.
+Description:
+    This is a cross between Minesweeper and an RPG.
+    You gain levels by killing weak monsters and win when you defeat them all.
+    It's a bit different than Minesweeper in that the number you reveal when
+    you click on a square is the total of the levels of the monsters
+    in adjacent squares. 
 
-rules:
-    Select a cell to reveal, printing the number of adjacent cells holding a mine.
-    If no adjacent cells hold a mine, the cell is called free. Free cell will recursively
-    reveal their neighboring cells. If a mine is revealed, you loose. The grid wraps.
+    When you select a tile with a monster in it, a battle begins.
+    First, you attack and deal damage (equal to your level) to the monster.
+    On the next turn, if the monster is still alive, it attacks you back.
+    Your attacks alternate until one of you dies.
 
-flags:
-    -r | --height N ~ set the height of the grid.
-    -c | --width N  ~ set the width of the grid.
-    -h | --help     ~ this help page.
-    -b              ~ beginner mode.
-    -i              ~ intermediate mode.
-    -a              ~ advanced mode.
-    -g              ~ god mode.
+Flags:
+    -d | --difficulty <EASY, HUGE, EXTREME, BLIND> ~ set the difficulty
+    -h | --help                     ~ this help page.
 
-controls:
+Legend:
+    HP: Hit points. If these drop to 0, you lose.
+    LV: Level. This is how much damage you deal to monsters.
+    EX: Experience. Collect enough to level up.
+    NE: Remaining experience required to reach the next level.
+
+Controls:
     ---selection--------------------
-    space ~ reveal the current cell.
+    space ~ open the selected cell
+    space ~ switch between already defeated monster and the number for its square
     ---movement---------------------
     h | a ~ move left.
     j | s ~ move down.
     k | w ~ move up.
     l | d ~ move right.
     ---flags------------------------
-    f     ~ set flag.
-    F     ~ remove flag.
+    1-9   ~ set flag.
+    0     ~ remove flag.
     ---control----------------------
     q     ~ quit game.
     r     ~ restart game.
 
-author:
-    ticki.
+Credit:
+    hojamaja.com.
 "#;
 
-/// The game state.
+// The game state.
 struct Game<R, W: Write> {
-    /// Width of the grid.
+    // Height of the grid.
+    height: u16,
+    // Width of the grid.
     width: u16,
-    /// The grid.
-    ///
-    /// The cells are enumerated like you would read a book. Left to right, until you reach the
-    /// line ending.
+    // The grid.
+    //
+    // The cells are enumerated like you would read a book. Left to right, until you reach the
+    // line ending.
     grid: Box<[Cell]>,
-    /// The difficulty of the game.
-    ///
-    /// The lower, the easier.
-    difficulty: u8,
-    /// The x coordinate.
+    // The difficulty of the game.
+    difficulty: Difficulty,
+    // The x coordinate.
     x: u16,
-    /// The y coordinate.
+    // The y coordinate.
     y: u16,
-    /// Points.
-    ///
-    /// That is, revealed fields.
-    points: u16,
-    /// Standard output.
+    // level
+    lv: u8,
+    // health points
+    hp: i8,
+    // experience points
+    exp: u16,
+    // experience needed for next level
+    ne: u16,
+    // Standard output.
     stdout: W,
-    /// Standard input.
+    // Standard input.
     stdin: R,
 }
 
-/// Initialize the game.
-fn init<W: Write, R: Read>(mut stdout: W, stdin: R, difficulty: u8, w: u16, h: u16) {
+// The information panel
+static HUD: &'static str = "╔═════════════════════════╗\n\r\
+                            ║                         ║\n\r\
+                            ║ LV:{} HP:{} EX:{} NE:{} ║\n\r\
+                            ╚═════════════════════════╝";
+
+// Initialize the game.
+fn init<W: Write, R: Read>(mut stdout: W, stdin: R, difficulty: Difficulty) {
     write!(stdout, "{}", clear::All).unwrap();
 
     // Set the initial game state.
     let mut game = Game {
         x: 0,
         y: 0,
+        height: h,
         width: w,
         grid: vec![
             Cell {
@@ -148,7 +119,7 @@ fn init<W: Write, R: Read>(mut stdout: W, stdin: R, difficulty: u8, w: u16, h: u
         difficulty: difficulty,
     };
 
-    // Reset that game.
+    // Reset the game.
     game.reset();
 
     // Start the event loop.
@@ -168,13 +139,14 @@ impl<R, W: Write> Drop for Game<R, W> {
     }
 }
 
+#[automock]
 impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
-    /// Get the grid position of a given coordinate.
+    // Get the grid position of a given coordinate.
     fn pos(&self, x: u16, y: u16) -> usize {
         y as usize * self.width as usize + x as usize
     }
 
-    /// Read cell, randomizing it if it is unobserved.
+    // Read cell, randomizing it if it is unobserved.
     fn read_cell(&mut self, c: usize) {
         if !self.grid[c].observed {
             self.grid[c].mine = rand::thread_rng().gen::<u8>() % self.difficulty == 0;
@@ -182,7 +154,7 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         }
     }
 
-    /// Get the cell at (x, y).
+    // Get the cell at (x, y).
     fn get(&mut self, x: u16, y: u16) -> Cell {
         let pos = self.pos(x, y);
 
@@ -190,7 +162,7 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         self.grid[pos]
     }
 
-    /// Get a mutable reference to the cell at (x, y).
+    // Get a mutable reference to the cell at (x, y).
     fn get_mut(&mut self, x: u16, y: u16) -> &mut Cell {
         let pos = self.pos(x, y);
 
@@ -198,9 +170,9 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         &mut self.grid[pos]
     }
 
-    /// Start the game loop.
-    ///
-    /// This will listen to events and do the appropriate actions.
+    // Start the game loop.
+    //
+    // This will listen to events and do the appropriate actions.
     fn start(&mut self) {
         let mut first_click = true;
         loop {
@@ -274,19 +246,19 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         }
     }
 
-    /// Set a flag on cell.
+    // Set a flag on cell.
     fn set_flag(&mut self, x: u16, y: u16) {
         if !self.get(x, y).revealed {
             self.stdout.write(FLAGGED.as_bytes()).unwrap();
             self.get_mut(x, y).flagged = true;
         }
     }
-    /// Remove a flag on cell.
+    // Remove a flag on cell.
     fn remove_flag(&mut self, x: u16, y: u16) {
         self.stdout.write(CONCEALED.as_bytes()).unwrap();
         self.get_mut(x, y).flagged = false;
     }
-    /// Place a flag on cell if unflagged, or remove it if present.
+    // Place a flag on cell if unflagged, or remove it if present.
     fn toggle_flag(&mut self, x: u16, y: u16) {
         if !self.get(x, y).flagged {
             self.set_flag(x, y);
@@ -295,9 +267,9 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         }
     }
 
-    /// Reset the game.
-    ///
-    /// This will display the starting grid, and fill the old grid with random mines.
+    // Reset the game.
+    //
+    // This will display the starting grid, fill the grid with monsters, and then number the tiles
     fn reset(&mut self) {
         // Reset the cursor.
         write!(self.stdout, "{}", cursor::Goto(1, 1)).unwrap();
@@ -348,23 +320,23 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         }
     }
 
-    /// Get the value of a cell.
-    ///
-    /// The value represent the sum of adjacent cells containing mines. A cell of value, 0, is
-    /// called "free".
+    // Get the value of a cell.
+    //
+    // The value represent the sum of adjacent cells containing mines. A cell of value, 0, is
+    // called "free".
     fn val(&mut self, x: u16, y: u16) -> u8 {
         // To avoid nightly version, we manually sum the adjacent mines.
         let mut res = 0;
         for &(x, y) in self.adjacent(x, y).iter() {
-            res += self.get(x, y).mine as u8;
+            res += self.get(x, y).lv;
         }
         res
     }
 
-    /// Reveal the cell, _c_.
-    ///
-    /// This will recursively reveal free cells, until non-free cell is reached, terminating the
-    /// current recursion descendant.
+    // Reveal the cell, _c_.
+    //
+    // This will recursively reveal free cells, until non-free cell is reached, terminating the
+    // current recursion descendant.
     fn reveal(&mut self, x: u16, y: u16) {
         let v = self.val(x, y);
 
@@ -383,12 +355,11 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
                 }
             }
         } else {
-            // Aww. The cell was not free. Print the value instead.
             self.stdout.write(&[b'0' + v]).unwrap();
         }
     }
 
-    /// Print the point count.
+    // Print the point count.
     fn print_points(&mut self) {
         let height = self.height();
         write!(self.stdout, "{}", cursor::Goto(3, height + 2)).unwrap();
@@ -397,7 +368,7 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
             .unwrap();
     }
 
-    /// Reveal all the fields, printing where the mines were.
+    // Reveal all the fields, printing where the mines were.
     fn reveal_all(&mut self) {
         write!(self.stdout, "{}", cursor::Goto(1, 1)).unwrap();
 
@@ -411,7 +382,7 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         }
     }
 
-    /// Game over!
+    // Game over!
     fn game_over(&mut self) {
         //Goto top left corner
         write!(self.stdout, "{}", cursor::Goto(1, 1)).unwrap();
@@ -433,13 +404,13 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         }
     }
 
-    /// Restart (replay) the game.
+    // Restart (replay) the game.
     fn restart(&mut self) {
         self.reset();
         self.start();
     }
 
-    /// Calculate the adjacent cells.
+    // Calculate the adjacent cells.
     fn adjacent(&self, x: u16, y: u16) -> [(u16, u16); 8] {
         let left = self.left(x);
         let right = self.right(x);
@@ -466,14 +437,14 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         ]
     }
 
-    /// Calculate the height (number of rows) of the grid.
+    // Calculate the height (number of rows) of the grid.
     fn height(&self) -> u16 {
         (self.grid.len() / self.width as usize) as u16
     }
 
-    /// Calculate the y coordinate of the cell "above" a given y coordinate.
-    ///
-    /// This wraps when _y = 0_.
+    // Calculate the y coordinate of the cell "above" a given y coordinate.
+    //
+    // This wraps when _y = 0_.
     fn up(&self, y: u16) -> u16 {
         if y == 0 {
             // Upper bound reached. Wrap around.
@@ -482,9 +453,9 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
             y - 1
         }
     }
-    /// Calculate the y coordinate of the cell "below" a given y coordinate.
-    ///
-    /// This wraps when _y = h - 1_.
+    // Calculate the y coordinate of the cell "below" a given y coordinate.
+    //
+    // This wraps when _y = h - 1_.
     fn down(&self, y: u16) -> u16 {
         if y + 1 == self.height() {
             // Lower bound reached. Wrap around.
@@ -493,9 +464,9 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
             y + 1
         }
     }
-    /// Calculate the x coordinate of the cell "left to" a given x coordinate.
-    ///
-    /// This wraps when _x = 0_.
+    // Calculate the x coordinate of the cell "left to" a given x coordinate.
+    //
+    // This wraps when _x = 0_.
     fn left(&self, x: u16) -> u16 {
         if x == 0 {
             // Lower bound reached. Wrap around.
@@ -504,9 +475,9 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
             x - 1
         }
     }
-    /// Calculate the x coordinate of the cell "left to" a given x coordinate.
-    ///
-    /// This wraps when _x = w - 1_.
+    // Calculate the x coordinate of the cell "left to" a given x coordinate.
+    //
+    // This wraps when _x = w - 1_.
     fn right(&self, x: u16) -> u16 {
         if x + 1 == self.width {
             // Upper bound reached. Wrap around.
@@ -519,9 +490,7 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
 
 fn main() {
     let mut args = env::args().skip(1);
-    let mut width = None;
-    let mut height = None;
-    let mut diff = 6;
+    let mut diff = None;
 
     // Get and lock the stdios.
     let stdout = io::stdout();
@@ -542,34 +511,12 @@ fn main() {
         };
 
         match arg.as_str() {
-            "-r" | "--height" => {
-                if height.is_none() {
-                    height = Some(
-                        args.next()
-                            .unwrap_or_else(|| {
-                                stderr.write(b"no height given.\n").unwrap();
-                                stderr.flush().unwrap();
-                                process::exit(1);
-                            })
-                            .parse()
-                            .unwrap_or_else(|_| {
-                                stderr.write(b"invalid integer given.\n").unwrap();
-                                stderr.flush().unwrap();
-                                process::exit(1);
-                            }),
-                    );
-                } else {
-                    stderr.write(b"you may only input one height.\n").unwrap();
-                    stderr.flush().unwrap();
-                    process::exit(1);
-                }
-            }
-            "-c" | "--width" => {
-                if width.is_none() {
+            "-d" | "--difficulty" => {
+                if diff.is_none() {
                     width = Some(
                         args.next()
                             .unwrap_or_else(|| {
-                                stderr.write(b"no width given.\n").unwrap();
+                                stderr.write(b"no difficulty given.\n").unwrap();
                                 stderr.flush().unwrap();
                                 process::exit(1);
                             })
@@ -581,7 +528,7 @@ fn main() {
                             }),
                     );
                 } else {
-                    stderr.write(b"you may only input one width.\n").unwrap();
+                    stderr.write(b"you may only input one difficulty.\n").unwrap();
                     stderr.flush().unwrap();
                     process::exit(1);
                 }
@@ -592,10 +539,6 @@ fn main() {
                 stdout.flush().unwrap();
                 process::exit(0);
             }
-            "-g" => diff = 2,
-            "-a" => diff = 4,
-            "-i" => diff = 6,
-            "-b" => diff = 10,
             _ => {
                 stderr.write(b"Unknown argument.\n").unwrap();
                 stderr.flush().unwrap();
@@ -615,7 +558,5 @@ fn main() {
         stdout,
         stdin,
         diff,
-        width.or(termwidth).unwrap_or(70),
-        height.or(termheight).unwrap_or(40),
     );
 }
