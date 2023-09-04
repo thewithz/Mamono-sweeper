@@ -2,12 +2,10 @@
 name = "mamono-sweeper"
 version = "0.1.0"
 authors = ["Nathan Withers <nathan@thewithz.tech>"]
-edition = "2021"
+channel = "nightly"
 
 [dependencies]
-termion = "1.5.1"
-rand = "0.7"
-yaml-rust = "0.4"
+termion = "1.5.6"
 
 [dev-dependencies]
 mockall = "0.8.0"

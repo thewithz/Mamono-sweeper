@@ -1,17 +1,19 @@
 extern crate termion;
-extern crate rand;
-extern crate yaml_rust;
+
+mod cell;
+mod board;
+
+use board::Difficulty;
 
 use termion::{clear, cursor, color, style};
 use termion::raw::IntoRawMode;
 use termion::input::TermRead;
 use termion::event::Key;
+use termion::event::Key::Char;
 
 use std::env;
 use std::io::{self, Read, Write};
 use std::process;
-
-use rand::Rng;
 
 // The help page.
 const HELP: &'static str = r#"
@@ -59,40 +61,26 @@ Credit:
 
 // The game state.
 struct Game<R, W: Write> {
-    // Height of the grid.
-    height: u16,
-    // Width of the grid.
-    width: u16,
-    // The grid.
-    //
-    // The cells are enumerated like you would read a book. Left to right, until you reach the
-    // line ending.
-    grid: Box<[Cell]>,
-    // The difficulty of the game.
-    difficulty: Difficulty,
-    // The x coordinate.
-    x: u16,
-    // The y coordinate.
-    y: u16,
-    // level
+    /// Represents the array of Cells
+    board: board::Board,
+    /// level
     lv: u8,
-    // health points
+    /// health points
     hp: i8,
-    // experience points
+    /// experience points
     exp: u16,
-    // experience needed for next level
+    /// experience needed for next level
     ne: u16,
-    // Standard output.
+    /// Standard output.
     stdout: W,
-    // Standard input.
+    /// Standard input.
     stdin: R,
+    /// x position of cursor
+    x: u16,
+    /// y position of cursor
+    y: u16,
 }
 
-// The information panel
-static HUD: &'static str = "╔═════════════════════════╗\n\r\
-                            ║                         ║\n\r\
-                            ║ LV:{} HP:{} EX:{} NE:{} ║\n\r\
-                            ╚═════════════════════════╝";
 
 // Initialize the game.
 fn init<W: Write, R: Read>(mut stdout: W, stdin: R, difficulty: Difficulty) {
@@ -100,23 +88,15 @@ fn init<W: Write, R: Read>(mut stdout: W, stdin: R, difficulty: Difficulty) {
 
     // Set the initial game state.
     let mut game = Game {
-        x: 0,
-        y: 0,
-        height: h,
-        width: w,
-        grid: vec![
-            Cell {
-                mine: false,
-                revealed: false,
-                observed: false,
-                flagged: false,
-            };
-            w as usize * h as usize
-        ].into_boxed_slice(),
-        points: 0,
+        stdout,
+        board: board::Board::new(difficulty),
         stdin: stdin.keys(),
-        stdout: stdout,
-        difficulty: difficulty,
+        lv: 0,
+        hp: 0,
+        exp: 0,
+        ne: 0,
+        x: 2,
+        y: 2,
     };
 
     // Reset the game.
@@ -139,71 +119,33 @@ impl<R, W: Write> Drop for Game<R, W> {
     }
 }
 
-#[automock]
 impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
-    // Get the grid position of a given coordinate.
-    fn pos(&self, x: u16, y: u16) -> usize {
-        y as usize * self.width as usize + x as usize
-    }
-
-    // Read cell, randomizing it if it is unobserved.
-    fn read_cell(&mut self, c: usize) {
-        if !self.grid[c].observed {
-            self.grid[c].mine = rand::thread_rng().gen::<u8>() % self.difficulty == 0;
-            self.grid[c].observed = true;
-        }
-    }
-
-    // Get the cell at (x, y).
-    fn get(&mut self, x: u16, y: u16) -> Cell {
-        let pos = self.pos(x, y);
-
-        self.read_cell(pos);
-        self.grid[pos]
-    }
-
-    // Get a mutable reference to the cell at (x, y).
-    fn get_mut(&mut self, x: u16, y: u16) -> &mut Cell {
-        let pos = self.pos(x, y);
-
-        self.read_cell(pos);
-        &mut self.grid[pos]
-    }
 
     // Start the game loop.
     //
     // This will listen to events and do the appropriate actions.
     fn start(&mut self) {
-        let mut first_click = true;
         loop {
             // Read a single byte from stdin.
             let b = self.stdin.next().unwrap().unwrap();
-            use termion::event::Key::*;
-            // if let Char(c) = b {
-            //     // Collect it as entropy.
-            //     self.rand.write_u8(c as u8);
-            // }
             match b {
-                Char('h') | Char('a') | Left => self.x = self.left(self.x),
-                Char('j') | Char('s') | Down => self.y = self.down(self.y),
-                Char('k') | Char('w') | Up => self.y = self.up(self.y),
-                Char('l') | Char('d') | Right => self.x = self.right(self.x),
+                Char('h') | Char('a') | Key::Left => self.x = left(self.x, self.board.width),
+                Char('j') | Char('s') | Key::Down => self.y = down(self.y, self.board.height),
+                Char('k') | Char('w') | Key::Up => self.y = up(self.y, self.board.height),
+                Char('l') | Char('d') | Key::Right => self.x = right(self.x, self.board.width),
                 Char(' ') => {
-                    // Check if it was a mine.
-                    let (x, y) = (self.x, self.y);
+                    let (x, y, width) = (self.x, self.y, self.board.width);
 
-                    if first_click {
-                        // This is the player's first turn; clear all cells of
-                        // mines around the cursor.
-                        for &(x, y) in self.adjacent(x, y).iter() {
-                            self.get_mut(x, y).mine = false;
-                        }
-                        self.get_mut(x, y).mine = false;
-                        first_click = false;
-                    }
+                    // if the player level == monster level
+                    // kill it and get experience
+                    // else
+                    // perform the battle
+                    // each "round" player loses monster level health until monster is dead or
+                    // player is dead
 
-                    if self.get(x, y).mine {
-                        self.reveal_all();
+                    // if the cell has a monster
+                    if let Some(level) = self.board.grid[pos(x, y, width)].level {
+                        //self.reveal_all();
                         // Make the background colour of the mine we just
                         // landed on red, and the foreground black.
                         write!(
@@ -212,25 +154,23 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
                             cursor::Goto(x + 2, y + 2),
                             color::Bg(color::Red),
                             color::Fg(color::Black),
-                            MINE,
+                            level,
                             style::Reset
                         ).unwrap();
                         self.game_over();
                         return;
                     }
+                    // if the cell doesn't have a monster. level == None
+                    else {
+                        //self.reveal_all();
+                    }
 
-                    if !self.get(x, y).revealed {
-                        self.points += 1;
+                    if !self.board.grid[pos(x, y, self.board.width)].revealed {
+                        let temp = x + 1;
                     }
 
                     // Reveal the cell.
                     self.reveal(x, y);
-
-                    self.print_points();
-                }
-                Char('f') => {
-                    let (x, y) = (self.x, self.y);
-                    self.toggle_flag(x, y);
                 }
                 Char('r') => {
                     self.restart();
@@ -246,25 +186,35 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         }
     }
 
-    // Set a flag on cell.
-    fn set_flag(&mut self, x: u16, y: u16) {
-        if !self.get(x, y).revealed {
-            self.stdout.write(FLAGGED.as_bytes()).unwrap();
-            self.get_mut(x, y).flagged = true;
+    fn draw(&mut self) {
+        // Write the upper part of the frame.
+        self.stdout.write(board::Window::TopLeftCorner.to_string().as_bytes()).unwrap();
+        for _ in 0..self.board.width {
+            self.stdout.write(board::Window::HorzBoundary.to_string().as_bytes()).unwrap();
         }
-    }
-    // Remove a flag on cell.
-    fn remove_flag(&mut self, x: u16, y: u16) {
-        self.stdout.write(CONCEALED.as_bytes()).unwrap();
-        self.get_mut(x, y).flagged = false;
-    }
-    // Place a flag on cell if unflagged, or remove it if present.
-    fn toggle_flag(&mut self, x: u16, y: u16) {
-        if !self.get(x, y).flagged {
-            self.set_flag(x, y);
-        } else {
-            self.remove_flag(x, y);
+        self.stdout.write(board::Window::TopRightCorner.to_string().as_bytes()).unwrap();
+        self.stdout.write(b"\n\r").unwrap();
+
+        // Conceal all the cells.
+        for _ in 0..self.board.height {
+            // The left part of the frame
+            self.stdout.write(board::Window::VertBoundary.to_string().as_bytes()).unwrap();
+
+            for _ in 0..self.board.width {
+                self.stdout.write_all(board::Window::Concealed.to_string().as_bytes()).unwrap();
+            }
+
+            // The right part of the frame.
+            self.stdout.write(board::Window::VertBoundary.to_string().as_bytes()).unwrap();
+            self.stdout.write(b"\n\r").unwrap();
         }
+
+        // Write the lower part of the frame.
+        self.stdout.write(board::Window::BottomLeftCorner.to_string().as_bytes()).unwrap();
+        for _ in 0..self.board.width {
+            self.stdout.write(board::Window::HorzBoundary.to_string().as_bytes()).unwrap();
+        }
+        self.stdout.write(board::Window::BottomRightCorner.to_string().as_bytes()).unwrap();
     }
 
     // Reset the game.
@@ -273,51 +223,10 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
     fn reset(&mut self) {
         // Reset the cursor.
         write!(self.stdout, "{}", cursor::Goto(1, 1)).unwrap();
-
-        // Write the upper part of the frame.
-        self.stdout.write(TOP_LEFT_CORNER.as_bytes()).unwrap();
-        for _ in 0..self.width {
-            self.stdout.write(HORZ_BOUNDARY.as_bytes()).unwrap();
-        }
-        self.stdout.write(TOP_RIGHT_CORNER.as_bytes()).unwrap();
-        self.stdout.write(b"\n\r").unwrap();
-
-        // Conceal all the cells.
-        for _ in 0..self.height() {
-            // The left part of the frame
-            self.stdout.write(VERT_BOUNDARY.as_bytes()).unwrap();
-
-            for _ in 0..self.width {
-                self.stdout.write_all(CONCEALED.as_bytes()).unwrap();
-            }
-
-            // The right part of the frame.
-            self.stdout.write(VERT_BOUNDARY.as_bytes()).unwrap();
-            self.stdout.write(b"\n\r").unwrap();
-        }
-
-        // Write the lower part of the frame.
-        self.stdout.write(BOTTOM_LEFT_CORNER.as_bytes()).unwrap();
-        for _ in 0..self.width {
-            self.stdout.write(HORZ_BOUNDARY.as_bytes()).unwrap();
-        }
-        self.stdout.write(BOTTOM_RIGHT_CORNER.as_bytes()).unwrap();
-
+        self.draw();
         write!(self.stdout, "{}", cursor::Goto(self.x + 2, self.y + 2)).unwrap();
         self.stdout.flush().unwrap();
-
-        // Reset the grid.
-        for i in 0..self.grid.len() {
-            // Fill it with random, concealed fields.
-            self.grid[i] = Cell {
-                mine: false,
-                revealed: false,
-                observed: false,
-                flagged: false,
-            };
-
-            self.points = 0;
-        }
+        self.board.reset();
     }
 
     // Get the value of a cell.
@@ -325,12 +234,10 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
     // The value represent the sum of adjacent cells containing mines. A cell of value, 0, is
     // called "free".
     fn val(&mut self, x: u16, y: u16) -> u8 {
-        // To avoid nightly version, we manually sum the adjacent mines.
-        let mut res = 0;
-        for &(x, y) in self.adjacent(x, y).iter() {
-            res += self.get(x, y).lv;
-        }
-        res
+        adjacent(x, y, self.board.width, self.board.height)
+            .iter()
+            .filter_map(|(x, y)| self.board.grid[pos(*x, *y, self.board.width)].level)
+            .sum()
     }
 
     // Reveal the cell, _c_.
@@ -340,7 +247,7 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
     fn reveal(&mut self, x: u16, y: u16) {
         let v = self.val(x, y);
 
-        self.get_mut(x, y).revealed = true;
+        self.board.grid[pos(x, y, self.board.width)].revealed = true;
 
         write!(self.stdout, "{}", cursor::Goto(x + 2, y + 2)).unwrap();
 
@@ -348,9 +255,12 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
             // If the cell is free, simply put a space on the position.
             self.stdout.write(b" ").unwrap();
 
+            //adjacent(x, y, self.board.width, self.board.height)
+            //    .iter()
+            //    .filter(|(x, y)| self.board.grid[pos(*x, *y, self.board.width)].revealed);
             // Recursively reveal adjacent cells until a non-free cel is reached.
-            for &(x, y) in self.adjacent(x, y).iter() {
-                if !self.get(x, y).revealed && !self.get(x, y).mine {
+            for &(x, y) in adjacent(x, y, self.board.width, self.board.height).iter() {
+                if !self.board.grid[pos(x, y, self.board.width)].revealed && !self.board.grid[pos(x, y, self.board.width)].level.is_none() {
                     self.reveal(x, y);
                 }
             }
@@ -359,35 +269,24 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         }
     }
 
-    // Print the point count.
-    fn print_points(&mut self) {
-        let height = self.height();
-        write!(self.stdout, "{}", cursor::Goto(3, height + 2)).unwrap();
-        self.stdout
-            .write(self.points.to_string().as_bytes())
-            .unwrap();
-    }
-
     // Reveal all the fields, printing where the mines were.
-    fn reveal_all(&mut self) {
-        write!(self.stdout, "{}", cursor::Goto(1, 1)).unwrap();
+    //fn reveal_all(&mut self) {
+    //    write!(self.stdout, "{}", cursor::Goto(1, 1)).unwrap();
 
-        for y in 0..self.height() {
-            for x in 0..self.width {
-                write!(self.stdout, "{}", cursor::Goto(x + 2, y + 2)).unwrap();
-                if self.get(x, y).mine {
-                    self.stdout.write(MINE.as_bytes()).unwrap();
-                }
-            }
-        }
-    }
+    //    write!(self.stdout, "{}", cursor::Goto(self.x + 2, self.y + 2)).unwrap();
+    //    self.board.grid.iter_mut().for_each(|c| {
+    //        if let None = c.level {
+    //            self.stdout.write("M".as_bytes()).unwrap();
+    //        }
+    //    });
+    //}
 
     // Game over!
     fn game_over(&mut self) {
-        //Goto top left corner
         write!(self.stdout, "{}", cursor::Goto(1, 1)).unwrap();
+        //Goto top left corner
 
-        self.stdout.write(GAME_OVER.as_bytes()).unwrap();
+        self.stdout.write("GAME_OVER".as_bytes()).unwrap();
         self.stdout.flush().unwrap();
 
         loop {
@@ -410,87 +309,60 @@ impl<R: Iterator<Item = Result<Key, std::io::Error>>, W: Write> Game<R, W> {
         self.start();
     }
 
-    // Calculate the adjacent cells.
-    fn adjacent(&self, x: u16, y: u16) -> [(u16, u16); 8] {
-        let left = self.left(x);
-        let right = self.right(x);
-        let up = self.up(y);
-        let down = self.down(y);
+}
 
-        [
-            // Left-up
-            (left, up),
-            // Up
-            (x, up),
-            // Right-up
-            (right, up),
-            // Left
-            (left, y),
-            // Right
-            (right, y),
-            // Left-down
-            (left, down),
-            // Down
-            (x, down),
-            // Right-down
-            (right, down),
-        ]
-    }
+// Get the grid position of a given coordinate.
+pub fn pos(x: u16, y: u16, width: u16) -> usize {
+    y as usize * width as usize + x as usize
+}
 
-    // Calculate the height (number of rows) of the grid.
-    fn height(&self) -> u16 {
-        (self.grid.len() / self.width as usize) as u16
-    }
+// Calculate the adjacent cells.
+pub fn adjacent(x: u16, y: u16, width: u16, height: u16) -> [(u16, u16); 8] {
+    let left = left(x, width);
+    let right = right(x, width);
+    let up = up(y, height);
+    let down = down(y, height);
 
-    // Calculate the y coordinate of the cell "above" a given y coordinate.
-    //
-    // This wraps when _y = 0_.
-    fn up(&self, y: u16) -> u16 {
-        if y == 0 {
-            // Upper bound reached. Wrap around.
-            self.height() - 1
-        } else {
-            y - 1
-        }
-    }
-    // Calculate the y coordinate of the cell "below" a given y coordinate.
-    //
-    // This wraps when _y = h - 1_.
-    fn down(&self, y: u16) -> u16 {
-        if y + 1 == self.height() {
-            // Lower bound reached. Wrap around.
-            0
-        } else {
-            y + 1
-        }
-    }
-    // Calculate the x coordinate of the cell "left to" a given x coordinate.
-    //
-    // This wraps when _x = 0_.
-    fn left(&self, x: u16) -> u16 {
-        if x == 0 {
-            // Lower bound reached. Wrap around.
-            self.width - 1
-        } else {
-            x - 1
-        }
-    }
-    // Calculate the x coordinate of the cell "left to" a given x coordinate.
-    //
-    // This wraps when _x = w - 1_.
-    fn right(&self, x: u16) -> u16 {
-        if x + 1 == self.width {
-            // Upper bound reached. Wrap around.
-            0
-        } else {
-            x + 1
-        }
-    }
+    [
+        // Left-up
+        (left, up),
+        // Up
+        (x, up),
+        // Right-up
+        (right, up),
+        // Left
+        (left, y),
+        // Right
+        (right, y),
+        // Left-down
+        (left, down),
+        // Down
+        (x, down),
+        // Right-down
+        (right, down),
+    ]
+}
+
+// Calculate the y coordinate of the cell "above" a given y coordinate.
+fn up(y: u16, height: u16) -> u16 {
+    (y - 1) % height
+}
+// Calculate the y coordinate of the cell "below" a given y coordinate.
+fn down(y: u16, height: u16) -> u16 {
+    (y + 1) % height
+}
+// Calculate the x coordinate of the cell "left to" a given x coordinate.
+fn left(x: u16, width: u16) -> u16 {
+    (x - 1) % width
+}
+// Calculate the x coordinate of the cell "right to" a given x coordinate.
+fn right(x: u16, width: u16) -> u16 {
+    (x + 1) % width
 }
 
 fn main() {
     let mut args = env::args().skip(1);
-    let mut diff = None;
+    let diff: Option<board::Difficulty> = Some(Difficulty::EASY);
 
     // Get and lock the stdios.
     let stdout = io::stdout();
@@ -511,28 +383,6 @@ fn main() {
         };
 
         match arg.as_str() {
-            "-d" | "--difficulty" => {
-                if diff.is_none() {
-                    width = Some(
-                        args.next()
-                            .unwrap_or_else(|| {
-                                stderr.write(b"no difficulty given.\n").unwrap();
-                                stderr.flush().unwrap();
-                                process::exit(1);
-                            })
-                            .parse()
-                            .unwrap_or_else(|_| {
-                                stderr.write(b"invalid integer given.\n").unwrap();
-                                stderr.flush().unwrap();
-                                process::exit(1);
-                            }),
-                    );
-                } else {
-                    stderr.write(b"you may only input one difficulty.\n").unwrap();
-                    stderr.flush().unwrap();
-                    process::exit(1);
-                }
-            }
             "-h" | "--help" => {
                 // Print the help page.
                 stdout.write(HELP.as_bytes()).unwrap();
@@ -553,10 +403,12 @@ fn main() {
     let termsize = termion::terminal_size().ok();
     let termwidth = termsize.map(|(w, _)| w - 2);
     let termheight = termsize.map(|(_, h)| h - 2);
-    // Initialize the game!
-    init(
-        stdout,
-        stdin,
-        diff,
-    );
+    if let Some(difficulty) = diff {
+        // Initialize the game!
+        init(
+            stdout,
+            stdin,
+            difficulty,
+        );
+    }
 }
